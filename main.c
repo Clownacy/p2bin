@@ -339,11 +339,9 @@ static cc_bool ProcessRecords(void)
 						fprintf(stderr, "Error: Unrecognised record header value (0x%02X).\n", record_header);
 						return cc_false;
 					}
-					else
-					{
-						/* Legacy CODE segment. */
-						ProcessSegment(record_header);
-					}
+
+					/* Legacy CODE segment. */
+					ProcessSegment(record_header);
 
 					break;
 			}
