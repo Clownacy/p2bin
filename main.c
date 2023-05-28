@@ -43,10 +43,10 @@ static FILE *input_file, *output_file;
 static jmp_buf jump_buffer;
 static unsigned char padding_buffer[0x1000];
 static unsigned char z80_buffer[0x2000];
-static unsigned int z80_data_size = 0;
-static unsigned int z80_read_index = 0;
+static unsigned int z80_read_index, z80_write_index;
 static unsigned long maximum_address = 0;
 static cc_bool last_segment_was_compressable_z80_code = cc_false;
+static unsigned long last_z80_segment_end = 0;
 static Compression compression_format = COMPRESSION_UNCOMPRESSED;
 static unsigned int padding_value = 0;
 
@@ -99,7 +99,7 @@ static unsigned int AccurateKosinskiCompressCallback_ReadByte(void* const user_d
 {
 	(void)user_data;
 
-	return z80_read_index == z80_data_size ? (unsigned int)-1 : z80_buffer[z80_read_index++];
+	return z80_read_index == z80_write_index ? (unsigned int)-1 : z80_buffer[z80_read_index++];
 }
 
 static void AccurateKosinskiCompressCallback_WriteByte(void* const user_data, const unsigned int byte)
@@ -136,7 +136,7 @@ static int LZSS_ReadByte(void* const user_data)
 {
 	(void)user_data;
 
-	return z80_read_index == z80_data_size ? EOF : z80_buffer[z80_read_index++];
+	return z80_read_index == z80_write_index ? EOF : z80_buffer[z80_read_index++];
 }
 
 static unsigned long EmitCompressedZ80Code(void)
@@ -149,7 +149,7 @@ static unsigned long EmitCompressedZ80Code(void)
 		switch (compression_format)
 		{
 			case COMPRESSION_UNCOMPRESSED:
-				fwrite(z80_buffer, z80_data_size, 1, output_file);
+				fwrite(z80_buffer, z80_write_index, 1, output_file);
 				break;
 
 			case COMPRESSION_KOSINSKI:
@@ -169,7 +169,7 @@ static unsigned long EmitCompressedZ80Code(void)
 			}
 
 			case COMPRESSION_KOSINSKI_OPTIMISED:
-				if (!ClownLZSS_KosinskiCompress(z80_buffer, z80_data_size, &clownlzss_callbacks))
+				if (!ClownLZSS_KosinskiCompress(z80_buffer, z80_write_index, &clownlzss_callbacks))
 				{
 					fputs("Error: Failed to allocate memory for compressor.\n", stderr);
 					longjmp(jump_buffer, 1);
@@ -183,7 +183,7 @@ static unsigned long EmitCompressedZ80Code(void)
 				break;
 
 			case COMPRESSION_SAXMAN_OPTIMISED:
-				if (!ClownLZSS_SaxmanCompressWithoutHeader(z80_buffer, z80_data_size, &clownlzss_callbacks))
+				if (!ClownLZSS_SaxmanCompressWithoutHeader(z80_buffer, z80_write_index, &clownlzss_callbacks))
 				{
 					fputs("Error: Failed to allocate memory for compressor.\n", stderr);
 					longjmp(jump_buffer, 1);
@@ -213,29 +213,27 @@ static void ProcessSegment(const unsigned int processor_family)
 
 	/* Sound driver Z80 code must be compressed.
 	   The telltale sign of compressable Z80 code is that its first segment has an address of 0. */
-	if (processor_family == 0x51 && (start_address == 0 || last_segment_was_compressable_z80_code))
+	if (processor_family == 0x51 && (start_address == 0 || (last_segment_was_compressable_z80_code && start_address == last_z80_segment_end)))
 	{
 		/* What we do is read as many consecutive Z80 segments as possible into a buffer and then
-		   compressed and emit it when we encounter a non-Z80 segment or the end of the code file. */
-		last_segment_was_compressable_z80_code = cc_true;
+		   compress and emit it when we encounter a non-Z80 segment or the end of the code file. */
 
-		if (start_address >= sizeof(z80_buffer))
+		if (!last_segment_was_compressable_z80_code)
 		{
-			fprintf(stderr, "Error: Compressed Z80 segment will not fit in Z80 RAM (Z80 RAM ends at 0x2000 but segment starts at 0x%lX).\n", start_address);
+			last_segment_was_compressable_z80_code = cc_true;
+			z80_read_index = z80_write_index = 0;
+		}
+
+		last_z80_segment_end = end_address;
+
+		if (z80_write_index + length > sizeof(z80_buffer))
+		{
+			fputs("Error: Compressed Z80 segment is too large.\n", stderr);
 			longjmp(jump_buffer, 1);
 		}
-		else if (end_address >= sizeof(z80_buffer))
-		{
-			fprintf(stderr, "Error: Compressed Z80 segment will not fit in Z80 RAM (Z80 RAM ends at 0x2000 but segment ends at 0x%lX).\n", end_address);
-			longjmp(jump_buffer, 1);
-		}
-		else
-		{
-			ReadBytes(&z80_buffer[start_address], length);
 
-			if (end_address > z80_data_size)
-				z80_data_size = end_address;
-		}
+		ReadBytes(&z80_buffer[z80_write_index], length);
+		z80_write_index += length;
 	}
 	else
 	{
