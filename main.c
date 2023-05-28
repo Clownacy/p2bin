@@ -26,15 +26,29 @@ PERFORMANCE OF THIS SOFTWARE.
 
 #include "accurate-kosinski/lib/kosinski-compress.h"
 #include "clownlzss/kosinski.h"
+#include "clownlzss/saxman.h"
+#include "lz_comp2/LZSS.h"
 
+typedef enum Compression
+{
+	COMPRESSION_UNCOMPRESSED,
+	COMPRESSION_KOSINSKI,
+	COMPRESSION_KOSINSKI_OPTIMISED,
+	COMPRESSION_SAXMAN,
+	COMPRESSION_SAXMAN_OPTIMISED
+} Compression;
+
+static const char *header_filename;
 static FILE *input_file, *output_file;
 static jmp_buf jump_buffer;
 static unsigned char padding_buffer[0x1000];
 static unsigned char z80_buffer[0x2000];
 static unsigned int z80_data_size = 0;
+static unsigned int z80_read_index = 0;
 static unsigned long maximum_address = 0;
 static cc_bool last_segment_was_compressable_z80_code = cc_false;
-static cc_bool accurate_compression = cc_false;
+static Compression compression_format = COMPRESSION_UNCOMPRESSED;
+static unsigned int padding_value = 0;
 
 static unsigned int ReadByte(void)
 {
@@ -83,8 +97,6 @@ static unsigned long ReadLongInt(void)
 
 static unsigned int AccurateKosinskiCompressCallback_ReadByte(void* const user_data)
 {
-	static unsigned int z80_read_index = 0;
-	
 	(void)user_data;
 
 	return z80_read_index == z80_data_size ? (unsigned int)-1 : z80_buffer[z80_read_index++];
@@ -118,25 +130,57 @@ static size_t ClownLZSSCallback_Tell(void* const user_data)
 	return ftell(output_file);
 }
 
-static void EmitCompressedZ80Code(void)
+static const ClownLZSS_Callbacks clownlzss_callbacks = {NULL, ClownLZSSCallback_Write, ClownLZSSCallback_Seek, ClownLZSSCallback_Tell};
+
+static int LZSS_ReadByte(void* const user_data)
+{
+	(void)user_data;
+
+	return z80_read_index == z80_data_size ? EOF : z80_buffer[z80_read_index++];
+}
+
+static unsigned long EmitCompressedZ80Code(void)
 {
 	if (last_segment_was_compressable_z80_code)
 	{
+		const unsigned long start_address = ftell(output_file);
 		unsigned long end_address;
 
-		if (accurate_compression)
+		switch (compression_format)
 		{
-			static const KosinskiCompressCallbacks callbacks = {NULL, AccurateKosinskiCompressCallback_ReadByte, NULL, AccurateKosinskiCompressCallback_WriteByte};
-			KosinskiCompress(&callbacks, cc_false);
-		}
-		else
-		{
-			static const ClownLZSS_Callbacks callbacks = {NULL, ClownLZSSCallback_Write, ClownLZSSCallback_Seek, ClownLZSSCallback_Tell};
-			if (!ClownLZSS_KosinskiCompress(z80_buffer, z80_data_size, &callbacks))
+			case COMPRESSION_UNCOMPRESSED:
+				fwrite(z80_buffer, z80_data_size, 1, output_file);
+				break;
+
+			case COMPRESSION_KOSINSKI:
 			{
-				fputs("Error: Failed to allocate memory for compressor.\n", stderr);
-				longjmp(jump_buffer, 1);
+				static const KosinskiCompressCallbacks callbacks = {NULL, AccurateKosinskiCompressCallback_ReadByte, NULL, AccurateKosinskiCompressCallback_WriteByte};
+				KosinskiCompress(&callbacks, cc_false);
+				break;
 			}
+
+			case COMPRESSION_KOSINSKI_OPTIMISED:
+				if (!ClownLZSS_KosinskiCompress(z80_buffer, z80_data_size, &clownlzss_callbacks))
+				{
+					fputs("Error: Failed to allocate memory for compressor.\n", stderr);
+					longjmp(jump_buffer, 1);
+				}
+
+				break;
+
+			case COMPRESSION_SAXMAN:
+				Encode(LZSS_ReadByte, NULL, output_file);
+				fputc('N', output_file); /* Sonic 2 has this strange termination byte. It's not actually needed for anything. */
+				break;
+
+			case COMPRESSION_SAXMAN_OPTIMISED:
+				if (!ClownLZSS_SaxmanCompressWithoutHeader(z80_buffer, z80_data_size, &clownlzss_callbacks))
+				{
+					fputs("Error: Failed to allocate memory for compressor.\n", stderr);
+					longjmp(jump_buffer, 1);
+				}
+
+				break;
 		}
 
 		end_address = ftell(output_file);
@@ -145,7 +189,11 @@ static void EmitCompressedZ80Code(void)
 			maximum_address = end_address;
 
 		last_segment_was_compressable_z80_code = cc_false;
+
+		return end_address - start_address;
 	}
+
+	return 0;
 }
 
 static void ProcessSegment(const unsigned int processor_family)
@@ -186,7 +234,31 @@ static void ProcessSegment(const unsigned int processor_family)
 
 		unsigned long i;
 
-		EmitCompressedZ80Code();
+		const unsigned long compressed_z80_code_size = EmitCompressedZ80Code();
+
+		if (compressed_z80_code_size != 0)
+		{
+			/* If the segment after the compressed data overlaps it, then not enough space was allocated for it. */
+			if (start_address < (unsigned long)ftell(output_file))
+				fprintf(stderr, "Warning: Space reserved for the compressed Z80 data is too small - at least 0x%lX bytes are needed. Increase the value used by the 'org' after the Z80 data.\n", compressed_z80_code_size);
+
+			if (header_filename != NULL)
+			{
+				/* Output the size of the compressed data to the header file for fixpointer to amend the ROM with. */
+				FILE* const header_file = fopen(header_filename, "r+");
+
+				if (header_file == NULL)
+				{
+					fputs("Error: Could not open header file for amending.\n", stderr);
+					longjmp(jump_buffer, 1);
+				}
+				else
+				{
+					fprintf(header_file, "comp_z80_size 0x%lX ", compressed_z80_code_size);
+					fclose(header_file);
+				}
+			}
+		}
 
 		if (start_address > maximum_address)
 		{
@@ -221,7 +293,7 @@ static void ProcessSegment(const unsigned int processor_family)
 
 static cc_bool ProcessRecords(void)
 {
-	memset(padding_buffer, 0xFF, sizeof(padding_buffer));
+	memset(padding_buffer, padding_value, sizeof(padding_buffer));
 
 	if (setjmp(jump_buffer) == 0)
 	{
@@ -298,10 +370,50 @@ int main(int argc, char **argv)
 		{
 			switch (argument[1])
 			{
-				case 'a':
-					accurate_compression = cc_true;
+				case 'z':
+					/* Z80 compression format. */
+					switch (argument[2])
+					{
+						case 'k':
+							switch (argument[3])
+							{
+								case '\0':
+									compression_format = COMPRESSION_KOSINSKI;
+									continue;
+
+								case 'o':
+									compression_format = COMPRESSION_KOSINSKI_OPTIMISED;
+									continue;
+							}
+
+							break;
+
+						case 's':
+							switch (argument[3])
+							{
+								case '\0':
+									compression_format = COMPRESSION_SAXMAN;
+									continue;
+
+								case 'o':
+									compression_format = COMPRESSION_SAXMAN_OPTIMISED;
+									continue;
+							}
+
+							break;
+					}
+
 					break;
+
+				case 'p':
+					/* Padding value. */
+					if (sscanf(argument, "-p%X", &padding_value) == 0)
+						fputs("Error: Could not parse '-p' argument's padding value.\n", stderr);
+
+					continue;
 			}
+
+			fprintf(stderr, "Error: Unrecognised option '%s'.\n", argument);
 		}
 		else if (input_filename == NULL)
 		{
@@ -310,6 +422,10 @@ int main(int argc, char **argv)
 		else if (output_filename == NULL)
 		{
 			output_filename = argument;
+		}
+		else if (header_filename == NULL)
+		{
+			header_filename = argument;
 		}
 	}
 
