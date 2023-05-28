@@ -50,6 +50,9 @@ static unsigned long last_z80_segment_end = -1;
 static Compression compression_format = COMPRESSION_UNCOMPRESSED;
 static unsigned int padding_value = 0;
 static unsigned long additional_compressed_segment_address = 0;
+static unsigned long previous_68k_segment_start;
+static unsigned int previous_68k_segment_length;
+static cc_bool skdisasm_compatibility = cc_false;
 
 static unsigned int ReadByte(void)
 {
@@ -144,8 +147,13 @@ static unsigned long EmitCompressedZ80Code(void)
 {
 	if (last_segment_was_compressable_z80_code)
 	{
-		const unsigned long start_address = ftell(output_file);
-		unsigned long end_address;
+		unsigned long start_address, end_address, compressed_z80_code_size;
+
+		/* Rewind to the start of the previous segment. */
+		if (skdisasm_compatibility)
+			fseek(output_file, previous_68k_segment_start, SEEK_SET);
+
+		start_address = ftell(output_file);
 
 		switch (compression_format)
 		{
@@ -198,9 +206,15 @@ static unsigned long EmitCompressedZ80Code(void)
 		if (end_address > maximum_address)
 			maximum_address = end_address;
 
+		compressed_z80_code_size = end_address - start_address;
+
+		/* Check if we fit within the previous segment. */
+		if (skdisasm_compatibility && compressed_z80_code_size > previous_68k_segment_length)
+			fprintf(stderr, "Warning: Space reserved for the compressed Z80 data is too small - at least 0x%lX bytes are needed. Increase the value used by the 'org' after the Z80 data.\n", compressed_z80_code_size);
+
 		last_segment_was_compressable_z80_code = cc_false;
 
-		return end_address - start_address;
+		return compressed_z80_code_size;
 	}
 
 	return 0;
@@ -251,7 +265,7 @@ static void ProcessSegment(const unsigned int processor_family)
 		if (compressed_z80_code_size != 0)
 		{
 			/* If the segment after the compressed data overlaps it, then not enough space was allocated for it. */
-			if (start_address < (unsigned long)ftell(output_file))
+			if (!skdisasm_compatibility && start_address < (unsigned long)ftell(output_file))
 				fprintf(stderr, "Warning: Space reserved for the compressed Z80 data is too small - at least 0x%lX bytes are needed. Increase the value used by the 'org' after the Z80 data.\n", compressed_z80_code_size);
 
 			if (header_filename != NULL)
@@ -300,6 +314,9 @@ static void ProcessSegment(const unsigned int processor_family)
 
 		if (end_address > maximum_address)
 			maximum_address = end_address;
+
+		previous_68k_segment_start = start_address;
+		previous_68k_segment_length = length;
 	}
 }
 
@@ -375,12 +392,16 @@ int main(int argc, char **argv)
 		fputs(
 			"Usage: p2bin [options] [input filename] [output filename] [header filename]\n"
 			"\n"
+		, stderr);
+		fputs(
 			"Options\n"
-			"  -zk  - Compress sound driver in Kosinski format.\n"
-			"  -zko - Compress sound driver in Kosinski format (optimised).\n"
-			"  -zs  - Compress sound driver in Saxman format.\n"
-			"  -zso - Compress sound driver in Saxman format (optimised).\n"
-			"  -pXX - Set padding value to the specified two-digit hexadecimal number.\n"
+			"  -zk    - Compress sound driver in Kosinski format.\n"
+			"  -zko   - Compress sound driver in Kosinski format (optimised).\n"
+			"  -zs    - Compress sound driver in Saxman format.\n"
+			"  -zso   - Compress sound driver in Saxman format (optimised).\n"
+			"  -pXX   - Set padding value to the specified two-digit hexadecimal number.\n"
+			"  -cXXXX - Set additional sound driver segment starting address.\n"
+			"  -3     - Enable compatibility with skdisasm quirks.\n"
 			"\n"
 		, stderr);
 		fputs(
@@ -453,6 +474,13 @@ int main(int argc, char **argv)
 					if (sscanf(argument, "-c%lX", &additional_compressed_segment_address) == 0)
 						fputs("Error: Could not parse '-c' argument's address value.\n", stderr);
 
+					continue;
+
+				case '3':
+					/* Enable Sonic 3 & Knuckles nonsense. */
+					/* The Sonic & Knuckles disassembly has a different way of allocating space
+					   for the compressed data, where it overwrites the previous segment. */
+					skdisasm_compatibility = cc_true;
 					continue;
 			}
 
