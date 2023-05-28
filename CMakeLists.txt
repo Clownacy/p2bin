@@ -9,3 +9,7 @@ set_target_properties(p2bin PROPERTIES
 	C_STANDARD_REQUIRED NO
 	C_EXTENSIONS OFF
 )
+
+add_subdirectory("accurate-kosinski" EXCLUDE_FROM_ALL)
+
+target_link_libraries(p2bin PRIVATE kosinski-compressor)

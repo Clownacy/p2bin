@@ -1,0 +1,3 @@
+[submodule "accurate-kosinski"]
+	path = accurate-kosinski
+	url = https://github.com/Clownacy/accurate-kosinski
