@@ -155,7 +155,16 @@ static unsigned long EmitCompressedZ80Code(void)
 			case COMPRESSION_KOSINSKI:
 			{
 				static const KosinskiCompressCallbacks callbacks = {NULL, AccurateKosinskiCompressCallback_ReadByte, NULL, AccurateKosinskiCompressCallback_WriteByte};
+				unsigned long bytes_to_pad, i;
+
 				KosinskiCompress(&callbacks, cc_false);
+
+				/* Kosinski-compressed data is always padded to 0x10 bytes. */
+				bytes_to_pad = -(ftell(output_file) - start_address) & 0xF;
+
+				for (i = 0; i < bytes_to_pad; ++i)
+					fputc(0, output_file);
+
 				break;
 			}
 
