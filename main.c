@@ -46,9 +46,10 @@ static unsigned char z80_buffer[0x2000];
 static unsigned int z80_read_index, z80_write_index;
 static unsigned long maximum_address = 0;
 static cc_bool last_segment_was_compressable_z80_code = cc_false;
-static unsigned long last_z80_segment_end = 0;
+static unsigned long last_z80_segment_end = -1;
 static Compression compression_format = COMPRESSION_UNCOMPRESSED;
 static unsigned int padding_value = 0;
+static unsigned long additional_compressed_segment_address = 0;
 
 static unsigned int ReadByte(void)
 {
@@ -213,13 +214,17 @@ static void ProcessSegment(const unsigned int processor_family)
 
 	/* Sound driver Z80 code must be compressed.
 	   The telltale sign of compressable Z80 code is that its first segment has an address of 0. */
-	if (processor_family == 0x51 && (start_address == 0 || (last_segment_was_compressable_z80_code && start_address == last_z80_segment_end)))
+	if (processor_family == 0x51 && (start_address == 0 || start_address == additional_compressed_segment_address || (last_segment_was_compressable_z80_code && start_address == last_z80_segment_end)))
 	{
 		/* What we do is read as many consecutive Z80 segments as possible into a buffer and then
 		   compress and emit it when we encounter a non-Z80 segment or the end of the code file. */
 
-		if (!last_segment_was_compressable_z80_code)
+		/* If we encounter an eligible segment that doesn't continue directly
+		   after the last one, then begin a new compressed chunk. */
+		if (start_address != last_z80_segment_end)
 		{
+			EmitCompressedZ80Code();
+
 			last_segment_was_compressable_z80_code = cc_true;
 			z80_read_index = z80_write_index = 0;
 		}
@@ -438,6 +443,15 @@ int main(int argc, char **argv)
 					/* Padding value. */
 					if (sscanf(argument, "-p%X", &padding_value) == 0)
 						fputs("Error: Could not parse '-p' argument's padding value.\n", stderr);
+
+					/* TODO: Error when value is larger than 0xFF. */
+
+					continue;
+
+				case 'c':
+					/* Additional compressed segment address. */
+					if (sscanf(argument, "-c%lX", &additional_compressed_segment_address) == 0)
+						fputs("Error: Could not parse '-c' argument's address value.\n", stderr);
 
 					continue;
 			}
