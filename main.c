@@ -404,16 +404,20 @@ int main(int argc, char **argv)
 		fputs(
 			"Usage: p2bin [options] [input filename] [output filename] [header filename]\n"
 			"\n"
+			"Options\n"
+			"  -zk       - Compress sound driver in Kosinski format.\n"
+			"  -zko      - Compress sound driver in Kosinski format (optimised).\n"
+			"  -zs       - Compress sound driver in Saxman format.\n"
+			"  -zso      - Compress sound driver in Saxman format (optimised).\n"
+			"  -pXX      - Set padding value to the specified two-digit hexadecimal number.\n"
 		, stderr);
 		fputs(
-			"Options\n"
-			"  -zk    - Compress sound driver in Kosinski format.\n"
-			"  -zko   - Compress sound driver in Kosinski format (optimised).\n"
-			"  -zs    - Compress sound driver in Saxman format.\n"
-			"  -zso   - Compress sound driver in Saxman format (optimised).\n"
-			"  -pXX   - Set padding value to the specified two-digit hexadecimal number.\n"
-			"  -cXXXX - Set additional sound driver segment starting address.\n"
-			"  -3     - Enable compatibility with skdisasm quirks.\n"
+			"  -cXXXX    - Set additional sound driver segment starting address.\n"
+			"  -3        - Enable compatibility with skdisasm quirks.\n"
+			"  -l1[name] - Specify the constant that should be changed when the first\n"
+			"              compressed Z80 segment does not fit.\n"
+			"  -l2[name] - Specify the constant that should be changed when the second\n"
+			"              compressed Z80 segment does not fit.\n"
 			"\n"
 		, stderr);
 		fputs(
