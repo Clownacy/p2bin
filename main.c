@@ -358,6 +358,30 @@ int main(int argc, char **argv)
 	int exit_code = EXIT_FAILURE;
 	const char *input_filename = NULL, *output_filename = NULL;
 
+	if (argc <= 1)
+	{
+		/* Display usage prompt. */
+		/* The message is split because ANSI C has a stupidly-low limit on the largest string literal. */
+		fputs(
+			"Usage: p2bin [options] [input filename] [output filename] [header filename]\n"
+			"\n"
+			"Options\n"
+			"  -zk  - Compress sound driver in Kosinski format.\n"
+			"  -zko - Compress sound driver in Kosinski format (optimised).\n"
+			"  -zs  - Compress sound driver in Saxman format.\n"
+			"  -zso - Compress sound driver in Saxman format (optimised).\n"
+			"  -pXX - Set padding value to the specified two-digit hexadecimal number.\n"
+			"\n"
+		, stderr);
+		fputs(
+			"This tool converts a Macro Assembler AS '.p' code file to a ROM file.\n"
+			"Consecutive Z80 segments starting at address 0 can be compressed in a specified\n"
+			"format, and the size of this compressed data will be written to the header file.\n"
+		, stderr);
+
+		return EXIT_SUCCESS;
+	}
+
 	/* Skip filename. */
 	--argc; ++argv;
 
