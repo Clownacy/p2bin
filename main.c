@@ -53,6 +53,8 @@ static unsigned long additional_compressed_segment_address = 0;
 static unsigned long previous_68k_segment_start;
 static unsigned int previous_68k_segment_length;
 static cc_bool skdisasm_compatibility = cc_false;
+static const char *constants[2] = {"[UNKNOWN]", "[UNKNOWN]"};
+static unsigned int current_constant;
 
 static unsigned int ReadByte(void)
 {
@@ -143,6 +145,11 @@ static int LZSS_ReadByte(void* const user_data)
 	return z80_read_index == z80_write_index ? EOF : z80_buffer[z80_read_index++];
 }
 
+static void NotEnoughSpace(const unsigned long compressed_z80_code_size)
+{
+	fprintf(stderr, "Warning: Space reserved for the compressed Z80 data is too small. Set '%s' to at least $%lX.\n", constants[current_constant], compressed_z80_code_size);
+}
+
 static unsigned long EmitCompressedZ80Code(void)
 {
 	if (last_segment_was_compressable_z80_code)
@@ -210,7 +217,7 @@ static unsigned long EmitCompressedZ80Code(void)
 
 		/* Check if we fit within the previous segment. */
 		if (skdisasm_compatibility && compressed_z80_code_size > previous_68k_segment_length)
-			fprintf(stderr, "Warning: Space reserved for the compressed Z80 data is too small - at least 0x%lX bytes are needed. Increase the value used by the 'org' after the Z80 data.\n", compressed_z80_code_size);
+			NotEnoughSpace(compressed_z80_code_size);
 
 		last_segment_was_compressable_z80_code = cc_false;
 
@@ -241,6 +248,11 @@ static void ProcessSegment(const unsigned int processor_family)
 
 			last_segment_was_compressable_z80_code = cc_true;
 			z80_read_index = z80_write_index = 0;
+
+			if (start_address == 0)
+				current_constant = 0;
+			else if (start_address == additional_compressed_segment_address)
+				current_constant = 1;
 		}
 
 		last_z80_segment_end = end_address;
@@ -266,7 +278,7 @@ static void ProcessSegment(const unsigned int processor_family)
 		{
 			/* If the segment after the compressed data overlaps it, then not enough space was allocated for it. */
 			if (!skdisasm_compatibility && start_address < (unsigned long)ftell(output_file))
-				fprintf(stderr, "Warning: Space reserved for the compressed Z80 data is too small - at least 0x%lX bytes are needed. Increase the value used by the 'org' after the Z80 data.\n", compressed_z80_code_size);
+				NotEnoughSpace(compressed_z80_code_size);
 
 			if (header_filename != NULL)
 			{
@@ -482,6 +494,20 @@ int main(int argc, char **argv)
 					   for the compressed data, where it overwrites the previous segment. */
 					skdisasm_compatibility = cc_true;
 					continue;
+
+				case 'l':
+					switch (argument[2])
+					{
+						case '1':
+							constants[0] = &argument[3];
+							continue;
+
+						case '2':
+							constants[1] = &argument[3];
+							continue;
+					}
+
+					break;
 			}
 
 			fprintf(stderr, "Error: Unrecognised option '%s'.\n", argument);
