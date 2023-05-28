@@ -412,7 +412,7 @@ int main(int argc, char **argv)
 			"  -pXX      - Set padding value to the specified two-digit hexadecimal number.\n"
 		, stderr);
 		fputs(
-			"  -cXXXX    - Set additional sound driver segment starting address.\n"
+			"  -cXXXX    - Set second sound driver segment starting address.\n"
 			"  -3        - Enable compatibility with skdisasm quirks.\n"
 			"  -l1[name] - Specify the constant that should be changed when the first\n"
 			"              compressed Z80 segment does not fit.\n"
