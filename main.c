@@ -25,6 +25,7 @@ PERFORMANCE OF THIS SOFTWARE.
 #include <string.h>
 
 #include "accurate-kosinski/lib/kosinski-compress.h"
+#include "clownlzss/kosinski.h"
 
 static FILE *input_file, *output_file;
 static jmp_buf jump_buffer;
@@ -33,6 +34,7 @@ static unsigned char z80_buffer[0x2000];
 static unsigned int z80_data_size = 0;
 static unsigned long maximum_address = 0;
 static cc_bool last_segment_was_compressable_z80_code = cc_false;
+static cc_bool accurate_compression = cc_false;
 
 static unsigned int ReadByte(void)
 {
@@ -95,14 +97,47 @@ static void AccurateKosinskiCompressCallback_WriteByte(void* const user_data, co
 	fputc(byte, output_file);
 }
 
+static void ClownLZSSCallback_Write(void* const user_data, const unsigned char byte)
+{
+	(void)user_data;
+
+	fputc(byte, output_file);
+}
+
+static void ClownLZSSCallback_Seek(void* const user_data, const size_t position)
+{
+	(void)user_data;
+
+	fseek(output_file, position, SEEK_SET);
+}
+
+static size_t ClownLZSSCallback_Tell(void* const user_data)
+{
+	(void)user_data;
+
+	return ftell(output_file);
+}
+
 static void EmitCompressedZ80Code(void)
 {
 	if (last_segment_was_compressable_z80_code)
 	{
-		static const KosinskiCompressCallbacks accurate_kosinski_compress_callbacks = {NULL, AccurateKosinskiCompressCallback_ReadByte, NULL, AccurateKosinskiCompressCallback_WriteByte};
 		unsigned long end_address;
 
-		KosinskiCompress(&accurate_kosinski_compress_callbacks, cc_false);
+		if (accurate_compression)
+		{
+			static const KosinskiCompressCallbacks callbacks = {NULL, AccurateKosinskiCompressCallback_ReadByte, NULL, AccurateKosinskiCompressCallback_WriteByte};
+			KosinskiCompress(&callbacks, cc_false);
+		}
+		else
+		{
+			static const ClownLZSS_Callbacks callbacks = {NULL, ClownLZSSCallback_Write, ClownLZSSCallback_Seek, ClownLZSSCallback_Tell};
+			if (!ClownLZSS_KosinskiCompress(z80_buffer, z80_data_size, &callbacks))
+			{
+				fputs("Error: Failed to allocate memory for compressor.\n", stderr);
+				longjmp(jump_buffer, 1);
+			}
+		}
 
 		end_address = ftell(output_file);
 
@@ -260,11 +295,22 @@ int main(int argc, char **argv)
 		const char* const argument = *argv;
 
 		if (argument[0] == '-')
-			; /* TODO */
+		{
+			switch (argument[1])
+			{
+				case 'a':
+					accurate_compression = cc_true;
+					break;
+			}
+		}
 		else if (input_filename == NULL)
+		{
 			input_filename = argument;
+		}
 		else if (output_filename == NULL)
+		{
 			output_filename = argument;
+		}
 	}
 
 	/* Open input and output files. */
