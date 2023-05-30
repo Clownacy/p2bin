@@ -38,6 +38,22 @@ typedef enum Compression
 	COMPRESSION_SAXMAN_OPTIMISED
 } Compression;
 
+typedef enum Type
+{
+	TYPE_BEFORE, /* S&K */
+	TYPE_AFTER   /* S1, S2 */
+} Type;
+
+typedef struct CompressedSegment
+{
+	struct CompressedSegment *next;
+
+	unsigned long starting_address;
+	Compression compression;
+	const char *constant;
+	Type type;
+} CompressedSegment;
+
 static const char *header_filename;
 static FILE *input_file, *output_file;
 static jmp_buf jump_buffer;
@@ -45,16 +61,12 @@ static unsigned char padding_buffer[0x1000];
 static unsigned char z80_buffer[0x2000];
 static unsigned int z80_read_index, z80_write_index;
 static unsigned long maximum_address = 0;
-static cc_bool last_segment_was_compressable_z80_code = cc_false;
 static unsigned long last_z80_segment_end = -1;
-static Compression compression_format = COMPRESSION_UNCOMPRESSED;
 static unsigned int padding_value = 0;
-static unsigned long additional_compressed_segment_address = 0;
 static unsigned long previous_68k_segment_start;
 static unsigned int previous_68k_segment_length;
-static cc_bool skdisasm_compatibility = cc_false;
-static const char *constants[2] = {"[UNKNOWN]", "[UNKNOWN]"};
-static unsigned int current_constant;
+static CompressedSegment *compressed_segment_list_head = NULL;
+static const CompressedSegment *current_compressed_segment = NULL;
 
 static unsigned int ReadByte(void)
 {
@@ -147,22 +159,22 @@ static int LZSS_ReadByte(void* const user_data)
 
 static void NotEnoughSpace(const unsigned long compressed_z80_code_size)
 {
-	fprintf(stderr, "Warning: Space reserved for the compressed Z80 data is too small. Set '%s' to at least $%lX.\n", constants[current_constant], compressed_z80_code_size);
+	fprintf(stderr, "Warning: Space reserved for the compressed Z80 data is too small. Set '%s' to at least $%lX.\n", current_compressed_segment->constant, compressed_z80_code_size);
 }
 
 static unsigned long EmitCompressedZ80Code(void)
 {
-	if (last_segment_was_compressable_z80_code)
+	if (current_compressed_segment != NULL)
 	{
 		unsigned long start_address, end_address, compressed_z80_code_size;
 
 		/* Rewind to the start of the previous segment. */
-		if (skdisasm_compatibility)
+		if (current_compressed_segment->type == TYPE_BEFORE)
 			fseek(output_file, previous_68k_segment_start, SEEK_SET);
 
 		start_address = ftell(output_file);
 
-		switch (compression_format)
+		switch (current_compressed_segment->compression)
 		{
 			case COMPRESSION_UNCOMPRESSED:
 				fwrite(z80_buffer, z80_write_index, 1, output_file);
@@ -216,10 +228,10 @@ static unsigned long EmitCompressedZ80Code(void)
 		compressed_z80_code_size = end_address - start_address;
 
 		/* Check if we fit within the previous segment. */
-		if (skdisasm_compatibility && compressed_z80_code_size > previous_68k_segment_length)
+		if (current_compressed_segment->type == TYPE_BEFORE && compressed_z80_code_size > previous_68k_segment_length)
 			NotEnoughSpace(compressed_z80_code_size);
 
-		last_segment_was_compressable_z80_code = cc_false;
+		current_compressed_segment = NULL;
 
 		return compressed_z80_code_size;
 	}
@@ -232,27 +244,29 @@ static void ProcessSegment(const unsigned int processor_family)
 	const unsigned long start_address = ReadLongInt();
 	const unsigned int length = ReadWord();
 	const unsigned long end_address = start_address + length;
+	const CompressedSegment *matching_compressed_segment = NULL;
+	const cc_bool is_continued_compressed_segment = processor_family == 0x51 && current_compressed_segment != NULL && start_address == last_z80_segment_end;
+
+	if (processor_family == 0x51)
+		for (matching_compressed_segment = compressed_segment_list_head; matching_compressed_segment != NULL; matching_compressed_segment = matching_compressed_segment->next)
+			if (start_address == matching_compressed_segment->starting_address)
+				break;
 
 	/* Sound driver Z80 code must be compressed.
 	   The telltale sign of compressable Z80 code is that its first segment has an address of 0. */
-	if (processor_family == 0x51 && (start_address == 0 || start_address == additional_compressed_segment_address || (last_segment_was_compressable_z80_code && start_address == last_z80_segment_end)))
+	if (matching_compressed_segment != NULL || is_continued_compressed_segment)
 	{
 		/* What we do is read as many consecutive Z80 segments as possible into a buffer and then
 		   compress and emit it when we encounter a non-Z80 segment or the end of the code file. */
 
 		/* If we encounter an eligible segment that doesn't continue directly
 		   after the last one, then begin a new compressed chunk. */
-		if (start_address != last_z80_segment_end)
+		if (!is_continued_compressed_segment)
 		{
 			EmitCompressedZ80Code();
 
-			last_segment_was_compressable_z80_code = cc_true;
+			current_compressed_segment = matching_compressed_segment;
 			z80_read_index = z80_write_index = 0;
-
-			if (start_address == 0)
-				current_constant = 0;
-			else if (start_address == additional_compressed_segment_address)
-				current_constant = 1;
 		}
 
 		last_z80_segment_end = end_address;
@@ -272,17 +286,19 @@ static void ProcessSegment(const unsigned int processor_family)
 
 		unsigned long i;
 
-		const unsigned long compressed_z80_code_size = EmitCompressedZ80Code();
-
-		if (compressed_z80_code_size != 0)
+		/* If a compressed Z80 segment is in-progress, then output it. */
+		if (current_compressed_segment != NULL)
 		{
+			const Type type = current_compressed_segment->type;
+			const unsigned long compressed_z80_code_size = EmitCompressedZ80Code();
+
 			/* If the segment after the compressed data overlaps it, then not enough space was allocated for it. */
-			if (!skdisasm_compatibility && start_address < (unsigned long)ftell(output_file))
+			if (type == TYPE_AFTER && start_address < (unsigned long)ftell(output_file))
 				NotEnoughSpace(compressed_z80_code_size);
 
 			if (header_filename != NULL)
 			{
-				/* Output the size of the compressed data to the header file for fixpointer to amend the ROM with. */
+				/* Output the size of the compressed data to the header file for 'fixpointer' to amend the ROM with. */
 				FILE* const header_file = fopen(header_filename, "r+");
 
 				if (header_file == NULL)
@@ -300,9 +316,7 @@ static void ProcessSegment(const unsigned int processor_family)
 
 		if (start_address > maximum_address)
 		{
-			/* Set padding bytes between segments to 0xFF.
-			   This is needed by Sonic 1, Knuckles in Sonic 2, Sonic 3, and Sonic & Knuckles. */
-			/* TODO: Sonic 2. */
+			/* Set padding bytes between segments. */
 			const unsigned long padding_length = start_address - maximum_address;
 
 			fseek(output_file, maximum_address, SEEK_SET);
@@ -404,26 +418,32 @@ int main(int argc, char **argv)
 		fputs(
 			"Usage: p2bin [options] [input filename] [output filename] [header filename]\n"
 			"\n"
-			"Options\n"
-			"  -zk       - Compress sound driver in Kosinski format.\n"
-			"  -zko      - Compress sound driver in Kosinski format (optimised).\n"
-			"  -zs       - Compress sound driver in Saxman format.\n"
-			"  -zso      - Compress sound driver in Saxman format (optimised).\n"
-			"  -pXX      - Set padding value to the specified two-digit hexadecimal number.\n"
+			"Options:\n"
+			"  -p=[value]\n"
+			"    Set padding byte to the specified value.\n"
+			"  -z=[address],[compression],[constant],[type]\n"
+			"    Specify a compressed series of Z80 segments where...\n"
+			"      address = Starting address of first compressed segment.\n"
+			"      compression = Compression format:\n"
+			"        uncompressed       = Uncompressed\n"
 		, stderr);
 		fputs(
-			"  -cXXXX    - Set second sound driver segment starting address.\n"
-			"  -3        - Enable compatibility with skdisasm quirks.\n"
-			"  -l1[name] - Specify the constant that should be changed when the first\n"
-			"              compressed Z80 segment does not fit.\n"
-			"  -l2[name] - Specify the constant that should be changed when the second\n"
-			"              compressed Z80 segment does not fit.\n"
+			"        kosinski           = Kosinski (authentic)\n"
+			"        kosinski-optimised = Kosinski (optimised)\n"
+			"        saxman             = Saxman (authentic)\n"
+			"        saxman-optimised   = Saxman (optimised)\n"
+			"      constant = Constant that is used to reserve space for the compressed\n"
+			"        segments.\n"
+			"      type = Method of inserting compressed data:\n"
+			"        before = Overlap the previous segment.\n"
+			"        after  = Insert after the previous segment.\n"
 			"\n"
 		, stderr);
 		fputs(
 			"This tool converts a Macro Assembler AS '.p' code file to a ROM file.\n"
-			"Consecutive Z80 segments starting at address 0 can be compressed in a specified\n"
-			"format, and the size of this compressed data will be written to the header file.\n"
+			"Consecutive Z80 segments starting at a specified address can be compressed in a\n"
+			"specified format, and the size of this compressed data will be written to the\n"
+			"header file.\n"
 		, stderr);
 
 		return EXIT_SUCCESS;
@@ -435,83 +455,94 @@ int main(int argc, char **argv)
 	/* Process arguments. */
 	for (; argc != 0; --argc, ++argv)
 	{
-		const char* const argument = *argv;
+		char* const argument = *argv;
 
 		if (argument[0] == '-')
 		{
 			switch (argument[1])
 			{
 				case 'z':
-					/* Z80 compression format. */
-					switch (argument[2])
+				{
+					char* const options = &argument[2];
+					char* const compression_string = strchr(options, ',') + 1;
+					char* const constant = strchr(compression_string, ',') + 1;
+					char* const type_string = strchr(constant, ',') + 1;
+					unsigned long starting_address;
+
+					if (sscanf(options, "=%lX", &starting_address) != 1 || compression_string == NULL || constant == NULL || type_string == NULL)
 					{
-						case 'k':
-							switch (argument[3])
-							{
-								case '\0':
-									compression_format = COMPRESSION_KOSINSKI;
-									continue;
+						fputs("Error: Could not parse '-z' argument's options.\n", stderr);
+					}
+					else
+					{
+						Compression compression;
+						Type type;
+						CompressedSegment *compressed_segment;
 
-								case 'o':
-									compression_format = COMPRESSION_KOSINSKI_OPTIMISED;
-									continue;
-							}
+						/* Break the argument into substrings. */
+						constant[-1] = '\0';
+						type_string[-1] = '\0';
 
-							break;
+						/* Determine compression. */
+						if (strcmp(compression_string, "uncompressed") == 0)
+							compression = COMPRESSION_UNCOMPRESSED;
+						else if (strcmp(compression_string, "kosinski") == 0)
+							compression = COMPRESSION_KOSINSKI;
+						else if (strcmp(compression_string, "kosinski-optimised") == 0)
+							compression = COMPRESSION_KOSINSKI_OPTIMISED;
+						else if (strcmp(compression_string, "saxman") == 0)
+							compression = COMPRESSION_SAXMAN;
+						else if (strcmp(compression_string, "saxman-optimised") == 0)
+							compression = COMPRESSION_SAXMAN_OPTIMISED;
+						else
+						{
+							fprintf(stderr, "Error: Unrecognised compression format ('%s') in '-z' argument.\n", compression_string);
+							continue;
+						}
 
-						case 's':
-							switch (argument[3])
-							{
-								case '\0':
-									compression_format = COMPRESSION_SAXMAN;
-									continue;
+						/* Determine type. */
+						if (strcmp(type_string, "before") == 0)
+							type = TYPE_BEFORE;
+						else if (strcmp(type_string, "after") == 0)
+							type = TYPE_AFTER;
+						else
+						{
+							fprintf(stderr, "Error: Unrecognised type ('%s') in '-z' argument.\n", type_string);
+							continue;
+						}
 
-								case 'o':
-									compression_format = COMPRESSION_SAXMAN_OPTIMISED;
-									continue;
-							}
+						/* Add to list of compressed segments. */
+						compressed_segment = (CompressedSegment*)malloc(sizeof(CompressedSegment));
 
-							break;
+						if (compressed_segment == NULL)
+						{
+							fputs("Error: Out of memory.\n", stderr);
+						}
+						else
+						{
+							compressed_segment->next = compressed_segment_list_head;
+							compressed_segment_list_head = compressed_segment;
+
+							compressed_segment->starting_address = starting_address;
+							compressed_segment->compression = compression;
+							compressed_segment->constant = constant;
+							compressed_segment->type = type;
+						}
 					}
 
-					break;
+					continue;
+				}
+
+				break;
 
 				case 'p':
 					/* Padding value. */
-					if (sscanf(argument, "-p%X", &padding_value) == 0)
+					if (sscanf(argument, "-p=%X", &padding_value) == 0)
 						fputs("Error: Could not parse '-p' argument's padding value.\n", stderr);
 
 					/* TODO: Error when value is larger than 0xFF. */
 
 					continue;
-
-				case 'c':
-					/* Additional compressed segment address. */
-					if (sscanf(argument, "-c%lX", &additional_compressed_segment_address) == 0)
-						fputs("Error: Could not parse '-c' argument's address value.\n", stderr);
-
-					continue;
-
-				case '3':
-					/* Enable Sonic 3 & Knuckles nonsense. */
-					/* The Sonic & Knuckles disassembly has a different way of allocating space
-					   for the compressed data, where it overwrites the previous segment. */
-					skdisasm_compatibility = cc_true;
-					continue;
-
-				case 'l':
-					switch (argument[2])
-					{
-						case '1':
-							constants[0] = &argument[3];
-							continue;
-
-						case '2':
-							constants[1] = &argument[3];
-							continue;
-					}
-
-					break;
 			}
 
 			fprintf(stderr, "Error: Unrecognised option '%s'.\n", argument);
