@@ -159,7 +159,8 @@ static int LZSS_ReadByte(void* const user_data)
 
 static void NotEnoughSpace(const unsigned long compressed_z80_code_size)
 {
-	fprintf(stderr, "Warning: Space reserved for the compressed Z80 data is too small. Set '%s' to at least $%lX.\n", current_compressed_segment->constant, compressed_z80_code_size);
+	fprintf(stderr, "Error: Space reserved for the compressed Z80 segments is too small. Set '%s' to at least $%lX.\n", current_compressed_segment->constant, compressed_z80_code_size);
+	longjmp(jump_buffer, 1);
 }
 
 static unsigned long EmitCompressedZ80Code(void)
@@ -589,6 +590,10 @@ int main(int argc, char **argv)
 				exit_code = EXIT_SUCCESS;
 
 			fclose(output_file);
+
+			/* Delete the output file if we failed. The build system relies on this to detect errors. */
+			if (exit_code == EXIT_FAILURE)
+				remove(output_filename);
 		}
 
 		fclose(input_file);
