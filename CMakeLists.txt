@@ -18,4 +18,4 @@ add_subdirectory("accurate-kosinski" EXCLUDE_FROM_ALL)
 target_link_libraries(p2bin PRIVATE kosinski-compressor)
 
 add_subdirectory("clownlzss" EXCLUDE_FROM_ALL)
-target_link_libraries(p2bin PRIVATE clownlzss-kosinski clownlzss-saxman)
+target_link_libraries(p2bin PRIVATE clownlzss-kosinski clownlzss-kosinskiplus clownlzss-saxman)

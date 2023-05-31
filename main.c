@@ -26,6 +26,7 @@ PERFORMANCE OF THIS SOFTWARE.
 
 #include "accurate-kosinski/lib/kosinski-compress.h"
 #include "clownlzss/kosinski.h"
+#include "clownlzss/kosinskiplus.h"
 #include "clownlzss/saxman.h"
 #include "lz_comp2/LZSS.h"
 
@@ -35,7 +36,8 @@ typedef enum Compression
 	COMPRESSION_KOSINSKI,
 	COMPRESSION_KOSINSKI_OPTIMISED,
 	COMPRESSION_SAXMAN,
-	COMPRESSION_SAXMAN_OPTIMISED
+	COMPRESSION_SAXMAN_OPTIMISED,
+	COMPRESSION_KOSINSKIPLUS
 } Compression;
 
 typedef enum Type
@@ -213,6 +215,15 @@ static unsigned long EmitCompressedZ80Code(void)
 
 			case COMPRESSION_SAXMAN_OPTIMISED:
 				if (!ClownLZSS_SaxmanCompressWithoutHeader(z80_buffer, z80_write_index, &clownlzss_callbacks))
+				{
+					fputs("Error: Failed to allocate memory for compressor.\n", stderr);
+					longjmp(jump_buffer, 1);
+				}
+
+				break;
+
+			case COMPRESSION_KOSINSKIPLUS:
+				if (!ClownLZSS_KosinskiPlusCompress(z80_buffer, z80_write_index, &clownlzss_callbacks))
 				{
 					fputs("Error: Failed to allocate memory for compressor.\n", stderr);
 					longjmp(jump_buffer, 1);
@@ -433,6 +444,7 @@ int main(int argc, char **argv)
 			"        kosinski-optimised = Kosinski (optimised)\n"
 			"        saxman             = Saxman (authentic)\n"
 			"        saxman-optimised   = Saxman (optimised)\n"
+			"        kosinskiplus       = Kosinski+\n"
 			"      constant = Constant that is used to reserve space for the compressed\n"
 			"        segments.\n"
 			"      type = Method of inserting compressed data:\n"
@@ -495,6 +507,8 @@ int main(int argc, char **argv)
 							compression = COMPRESSION_SAXMAN;
 						else if (strcmp(compression_string, "saxman-optimised") == 0)
 							compression = COMPRESSION_SAXMAN_OPTIMISED;
+						else if (strcmp(compression_string, "kosinskiplus") == 0)
+							compression = COMPRESSION_KOSINSKIPLUS;
 						else
 						{
 							fprintf(stderr, "Error: Unrecognised compression format ('%s') in '-z' argument.\n", compression_string);
