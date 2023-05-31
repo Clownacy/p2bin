@@ -157,9 +157,9 @@ static int LZSS_ReadByte(void* const user_data)
 	return z80_read_index == z80_write_index ? EOF : z80_buffer[z80_read_index++];
 }
 
-static void NotEnoughSpace(const unsigned long compressed_z80_code_size)
+static void NotEnoughSpace(const CompressedSegment* const compressed_segment, const unsigned long compressed_z80_code_size)
 {
-	fprintf(stderr, "Error: Space reserved for the compressed Z80 segments is too small. Set '%s' to at least $%lX.\n", current_compressed_segment->constant, compressed_z80_code_size);
+	fprintf(stderr, "Error: Space reserved for the compressed Z80 segments is too small. Set '%s' to at least $%lX.\n", compressed_segment->constant, compressed_z80_code_size);
 	longjmp(jump_buffer, 1);
 }
 
@@ -230,7 +230,7 @@ static unsigned long EmitCompressedZ80Code(void)
 
 		/* Check if we fit within the previous segment. */
 		if (current_compressed_segment->type == TYPE_BEFORE && compressed_z80_code_size > previous_68k_segment_length)
-			NotEnoughSpace(compressed_z80_code_size);
+			NotEnoughSpace(current_compressed_segment, compressed_z80_code_size);
 
 		current_compressed_segment = NULL;
 
@@ -290,12 +290,12 @@ static void ProcessSegment(const unsigned int processor_family)
 		/* If a compressed Z80 segment is in-progress, then output it. */
 		if (current_compressed_segment != NULL)
 		{
-			const Type type = current_compressed_segment->type;
+			const CompressedSegment* const compressed_segment = current_compressed_segment;
 			const unsigned long compressed_z80_code_size = EmitCompressedZ80Code();
 
 			/* If the segment after the compressed data overlaps it, then not enough space was allocated for it. */
-			if (type == TYPE_AFTER && start_address < (unsigned long)ftell(output_file))
-				NotEnoughSpace(compressed_z80_code_size);
+			if (compressed_segment->type == TYPE_AFTER && start_address < (unsigned long)ftell(output_file))
+				NotEnoughSpace(compressed_segment, compressed_z80_code_size);
 
 			if (header_filename != NULL)
 			{
