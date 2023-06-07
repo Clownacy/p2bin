@@ -502,12 +502,12 @@ int main(int argc, char **argv)
 				case 'z':
 				{
 					char* const options = &argument[2];
-					char* const compression_string = strchr(options, ',') + 1;
-					char* const constant = strchr(compression_string, ',') + 1;
-					char* const type_string = strchr(constant, ',') + 1;
+					char* const comma_1 = strchr(options, ',');
+					char* const comma_2 = comma_1 == NULL ? NULL : strchr(comma_1 + 1, ',');
+					char* const comma_3 = comma_2 == NULL ? NULL : strchr(comma_2 + 1, ',');
 					unsigned long starting_address;
 
-					if (sscanf(options, "=%lX", &starting_address) != 1 || compression_string == NULL || constant == NULL || type_string == NULL)
+					if (sscanf(options, "=%lX", &starting_address) != 1 || comma_1 == NULL || comma_2 == NULL || comma_3 == NULL)
 					{
 						fputs("Error: Could not parse '-z' argument's options.\n", stderr);
 					}
@@ -517,9 +517,14 @@ int main(int argc, char **argv)
 						Type type;
 						CompressedSegment *compressed_segment;
 
+						char* const compression_string = comma_1 + 1;
+						char* const constant = comma_2 + 1;
+						char* const type_string = comma_3 + 1;
+
 						/* Break the argument into substrings. */
-						constant[-1] = '\0';
-						type_string[-1] = '\0';
+						*comma_1 = '\0';
+						*comma_2 = '\0';
+						*comma_3 = '\0';
 
 						/* Determine compression. */
 						if (strcmp(compression_string, "uncompressed") == 0)
