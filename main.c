@@ -586,8 +586,8 @@ int main(int argc, char **argv)
 					/* Padding value. */
 					if (sscanf(argument, "-p=%X", &padding_value) == 0)
 						fputs("Error: Could not parse '-p' argument's padding value.\n", stderr);
-
-					/* TODO: Error when value is larger than 0xFF. */
+					else if (padding_value > 0xFF)
+						fputs("Error: '-p' argument's padding value is too high (must be 0xFF or lower).\n", stderr);
 
 					continue;
 			}
