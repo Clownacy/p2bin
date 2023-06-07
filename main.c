@@ -36,6 +36,7 @@ typedef enum Compression
 	COMPRESSION_KOSINSKI,
 	COMPRESSION_KOSINSKI_OPTIMISED,
 	COMPRESSION_SAXMAN,
+	COMPRESSION_SAXMAN_BUGGED,
 	COMPRESSION_SAXMAN_OPTIMISED,
 	COMPRESSION_KOSINSKIPLUS
 } Compression;
@@ -209,9 +210,31 @@ static unsigned long EmitCompressedZ80Code(void)
 				break;
 
 			case COMPRESSION_SAXMAN:
+			case COMPRESSION_SAXMAN_BUGGED:
+			{
+				long before, after;
+
+				before = ftell(output_file);
 				Encode(LZSS_ReadByte, NULL, output_file);
-				fputc('N', output_file); /* Sonic 2 has this strange termination byte. It's not actually needed for anything. */
+				after = ftell(output_file);
+
+				if (current_compressed_segment->compression == COMPRESSION_SAXMAN_BUGGED)
+				{
+					/* Insert a dumb garbage byte depending on if the compressed data is an
+					   odd or even number of bytes long. This garbage byte is processed by
+					   the decompressor, causing garbage data to be generated past the end
+					   of the decompressed data. */
+					/*
+					https://forums.sonicretro.org/index.php?threads/the-mystery-of-sonic-2s-subtly-broken-sound-driver-compression.41804/
+					https://sonicresearch.org/community/index.php?threads/the-mystery-of-sonic-2s-subtly-broken-sound-driver-compression.6772/
+					https://clownacy.wordpress.com/2023/06/07/the-mystery-of-sonic-2s-subtly-broken-sound-driver-compression/
+					*/
+					const int garbage_byte = (after - before) % 2 != 0 ? 0x4E : 0x00;
+					fputc(garbage_byte, output_file);
+				}
+
 				break;
+			}
 
 			case COMPRESSION_SAXMAN_OPTIMISED:
 				if (!ClownLZSS_SaxmanCompressWithoutHeader(z80_buffer, z80_write_index, &clownlzss_callbacks))
@@ -302,6 +325,7 @@ static void ProcessSegment(const unsigned int processor_family)
 		if (current_compressed_segment != NULL)
 		{
 			const CompressedSegment* const compressed_segment = current_compressed_segment;
+
 			const unsigned long compressed_z80_code_size = EmitCompressedZ80Code();
 
 			/* If the segment after the compressed data overlaps it, then not enough space was allocated for it. */
@@ -438,11 +462,12 @@ int main(int argc, char **argv)
 			"      address = Starting address of first compressed segment.\n"
 			"      compression = Compression format:\n"
 			"        uncompressed       = Uncompressed\n"
-		, stderr);
-		fputs(
 			"        kosinski           = Kosinski (authentic)\n"
 			"        kosinski-optimised = Kosinski (optimised)\n"
+		, stderr);
+		fputs(
 			"        saxman             = Saxman (authentic)\n"
+			"        saxman-bugged      = Saxman (authentic) with a trailing garbage byte\n"
 			"        saxman-optimised   = Saxman (optimised)\n"
 			"        kosinskiplus       = Kosinski+\n"
 			"      constant = Constant that is used to reserve space for the compressed\n"
@@ -505,6 +530,8 @@ int main(int argc, char **argv)
 							compression = COMPRESSION_KOSINSKI_OPTIMISED;
 						else if (strcmp(compression_string, "saxman") == 0)
 							compression = COMPRESSION_SAXMAN;
+						else if (strcmp(compression_string, "saxman-bugged") == 0)
+							compression = COMPRESSION_SAXMAN_BUGGED;
 						else if (strcmp(compression_string, "saxman-optimised") == 0)
 							compression = COMPRESSION_SAXMAN_OPTIMISED;
 						else if (strcmp(compression_string, "kosinskiplus") == 0)
